@@ -1,4 +1,5 @@
 from typing import Literal
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -11,6 +12,9 @@ class OrderRequest(BaseModel):
 class ExtractedItem(BaseModel):
     product_name: str | None = None
     quantity: str | int | None = None
+    is_description: bool = False
+    product_code: str | None = None
+    resolution_candidates: list[str] = Field(default_factory=list)
 
 
 class ExtractedOrder(BaseModel):
@@ -18,6 +22,7 @@ class ExtractedOrder(BaseModel):
     delivery_city: str | None = None
     deadline: str | None = None
     items: list[ExtractedItem] = Field(default_factory=list)
+    repeat_order: bool = False
 
 
 class OrderItemResult(BaseModel):
@@ -25,6 +30,28 @@ class OrderItemResult(BaseModel):
     product_code: str | None
     requested: int | None
     available: int | None
+
+
+class QuoteLine(BaseModel):
+    product_code: str
+    quantity: int
+    unit_price_inr: Decimal
+    discount_percent: int
+    line_total_inr: Decimal
+
+
+class Quote(BaseModel):
+    lines: list[QuoteLine]
+    subtotal_inr: Decimal
+    delivery_inr: Decimal
+    total_inr: Decimal
+    valid_until: str
+
+
+class ProductResolution(BaseModel):
+    product_code: str | None = None
+    ambiguous: bool = False
+    matching_product_codes: list[str] = Field(default_factory=list)
 
 
 class OrderResult(BaseModel):
@@ -35,3 +62,4 @@ class OrderResult(BaseModel):
     status: Literal["Ready", "Partial", "Need info"]
     issues: list[str]
     reply: str
+    quote: Quote | None = None

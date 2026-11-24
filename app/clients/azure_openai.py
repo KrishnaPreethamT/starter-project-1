@@ -4,7 +4,7 @@ import time
 from openai import APIConnectionError, APITimeoutError, AzureOpenAI, RateLimitError
 
 from app.config import Settings
-from app.models.orders import ExtractedOrder
+from app.models.orders import ExtractedOrder, ProductResolution
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,8 @@ class AzureLLMClient:
             "delivery city, deadline as an ISO date string, and each product name exactly as written without "
             "quantity/unit words. For missing or unclear values use null. Quantities must preserve unusable text "
             "such as 'a few'. Interpret relative deadlines using the provided email Date header date. "
-            "If the email refers to a previous order, return no items unless specific items and quantities are stated."
+            "Mark an item is_description=true when it describes attributes instead of naming a catalogue product. "
+            "Set repeat_order=true when it asks to repeat a prior order. Extract factual details only."
         )
         user_prompt = f"Email Date header: {email_date or 'missing or invalid'}\n\nUntrusted email follows:\n{raw_email}"
         response = self._call(
@@ -100,7 +101,7 @@ class AzureLLMClient:
                 messages=[
                     {
                         "role": "system",
-                        "content": "Write a concise, professional customer reply using only the supplied computed order result and customer name. Do not change status, invent stock, promise unavailable products, or add discounts. Mention missing information or stock limitations shown in issues. Do not claim an order was placed.",
+                        "content": "Write a concise, professional customer reply using the supplied computed order result and reference context. The computed result is authoritative for status, quantities, prices, and quote. Reference context may support product or policy explanations only. Never invent facts, change status, alter prices/discounts, promise unavailable products, or claim an order was placed. Mention missing information or stock limitations shown in issues.",
                     },
                     {"role": "user", "content": f"Customer: {customer or 'Customer'}\nComputed order result: {result}"},
                 ],
@@ -108,3 +109,41 @@ class AzureLLMClient:
             ),
         )
         return (response.choices[0].message.content or "We received your order request and will follow up shortly.").strip()
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        response = self._call(
+            "embeddings",
+            lambda: self.client.embeddings.create(
+                model=self.settings.azure_openai_embedding_deployment,
+                input=texts,
+            ),
+        )
+        vectors = [item.embedding for item in response.data]
+        if len(vectors) != len(texts) or any(len(vector) != 1536 for vector in vectors):
+            raise LLMServiceError("Embedding deployment must return 1536-dimensional vectors")
+        return vectors
+
+    def resolve_product_description(self, description: str, candidates: list[dict]) -> ProductResolution:
+        response = self._call(
+            "product resolution",
+            lambda: self.client.beta.chat.completions.parse(
+                model=self.settings.azure_openai_deployment,
+                messages=[
+                    {"role": "system", "content": "Resolve a product only when exactly one supplied catalogue candidate matches every stated attribute. Return null for no match. Set ambiguous true only when two or more supplied candidates fit and list only those matching codes in matching_product_codes. Never invent product codes."},
+                    {"role": "user", "content": f"Customer description: {description}\nRetrieved candidates: {candidates}"},
+                ],
+                response_format=ProductResolution,
+                max_completion_tokens=200,
+            ),
+        )
+        parsed = response.choices[0].message.parsed
+        if parsed is None:
+            raise LLMServiceError("Azure OpenAI product resolution returned unusable data")
+        resolution = ProductResolution.model_validate(parsed.model_dump())
+        allowed = {candidate["product_code"] for candidate in candidates}
+        if resolution.product_code not in allowed:
+            return ProductResolution(
+                ambiguous=resolution.ambiguous,
+                matching_product_codes=[code for code in resolution.matching_product_codes if code in allowed],
+            )
+        return resolution

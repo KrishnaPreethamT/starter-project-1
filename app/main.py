@@ -11,11 +11,12 @@ from app.config import Settings
 from app.email_parser import EmailInputError, parse_email
 from app.models.orders import OrderRequest
 from app.repositories.products import ProductRepository
+from app.repositories.documents import DocumentRepository
 from app.services.order_workflow import OrderWorkflow
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
-app = FastAPI(title="Starter Project 1", version="1.0.0")
+app = FastAPI(title="Starter Project 2 — RAG-Enhanced Order Desk", version="2.0.0")
 
 
 @app.exception_handler(RequestValidationError)
@@ -31,7 +32,13 @@ def get_settings() -> Settings:
 
 def get_workflow() -> OrderWorkflow:
     settings = get_settings()
-    return OrderWorkflow(AzureLLMClient(settings), ProductRepository(settings.database_url), settings)
+    settings.validate_database()
+    return OrderWorkflow(
+        AzureLLMClient(settings),
+        ProductRepository(settings.database_url),
+        settings,
+        DocumentRepository(settings.database_url),
+    )
 
 
 @app.post("/orders")
