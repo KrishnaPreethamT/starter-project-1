@@ -7,30 +7,49 @@ The order desk accepts a customer's email, extracts the requested details, check
 ## Request workflow
 
 ```mermaid
-flowchart LR
-    E[Order email] --> API[FastAPI POST /orders]
-    API --> EX[Azure extraction]
-    EX --> WF[Python workflow]
-    WF -->|description embedding| V[(pgvector documents)]
-    V -->|brochure and policy chunks| WF
-    WF -->|product and stock| P[(PostgreSQL products and stock)]
-    WF -->|repeat order lookup| H[(PostgreSQL order_history)]
-    WF --> Q[Python status and quote]
-    Q --> R[Azure reply draft]
-    R --> O[Order response]
+flowchart TB
+    EMAIL[Customer order email] --> API[FastAPI POST /orders]
+    API --> PARSE[Parse headers, body and email date]
+    PARSE --> EXTRACT[Azure OpenAI structured extraction]
+    EXTRACT --> WORKFLOW[Python workflow and location normalization]
+
+    WORKFLOW --> REPEAT{Repeat order?}
+    REPEAT -->|Yes| HISTORY[(PostgreSQL order_history)]
+    HISTORY -->|Latest order by date, then order ID| OVERRIDE[Replace extracted items with latest history lines]
+    OVERRIDE --> PRODUCT
+    HISTORY -->|No rows for customer| CLARIFY[Need info; request clarification]
+    REPEAT -->|No| PRODUCT{Product described by attributes?}
+
+    PRODUCT -->|No| CATALOG[(PostgreSQL products and stock)]
+    PRODUCT -->|Yes| EMBED[Azure embedding]
+    EMBED --> DOCS[(pgvector documents)]
+    DOCS -->|Top 5 brochure chunks| RESOLVE[Azure product resolver]
+    RESOLVE --> MATCH{Exactly one matching candidate?}
+    MATCH -->|Yes; code is in retrieved candidates| CATALOG
+    MATCH -->|Zero or multiple| CLARIFY
+
+    WORKFLOW --> CONTEXT[Embed policy and product queries]
+    CONTEXT -->|Top 3 reference chunks| DOCS
+    CATALOG --> DECIDE[Python validation, stock and status]
+    DECIDE -->|Ready or Partial| QUOTE[Python Decimal quote calculation]
+    CLARIFY --> REPLY[Azure reply draft]
+    QUOTE --> REPLY
+    REPLY --> RESPONSE[JSON: customer, items, status, issues, reply and quote]
+
+    DOCS -.-> LOG[Log source, heading, cosine similarity and short chunk preview]
 ```
 
 1. FastAPI accepts an email at `POST /orders`; the email parser reads its headers, body, and date.
 2. Azure OpenAI extracts the customer, city, deadline, items, quantities, description indicators, and repeat-order intent into a Pydantic model. The prompt treats the email as untrusted data.
 3. The query is embedded with the configured Azure embedding deployment. `DocumentRepository` retrieves the nearest brochure or pricing-policy chunks from PostgreSQL/pgvector.
-4. When an item is a product description, the resolver sees only retrieved brochure candidates. Python accepts a returned code only if it was in those candidates, then looks the code up in the product table. An unresolved or ambiguous item needs customer clarification.
-5. For repeat orders, `ProductRepository` reads the customer's most recent order date and its order lines from `order_history`.
+4. When an item is a product description, the resolver compares all retrieved brochure candidates. Python accepts a code only when exactly one candidate matches and the returned code is in the retrieved set. Zero or multiple matches need customer clarification.
+5. For repeat orders, `ProductRepository` reads the latest order by date (then order ID as a tie-breaker) from `order_history`. Those history lines replace any items extracted from the repeat-order email.
 6. Python validates required values and lead time, reads current stock and unit prices, decides Ready/Partial/Need info, and builds a quote using the configured discount tiers and `Decimal` arithmetic. A quote is omitted when information is still needed.
 7. Azure OpenAI drafts a reply from the computed result and retrieved context. It does not receive the raw email and cannot change the computed status or quote.
 
 ## Document ingestion
 
-`scripts/ingest_documents.py` reads markdown beneath `data/starter-project-2/docs`, splits it at headings, embeds each section, and upserts chunks by `(source, heading)`. This makes re-ingestion safe to repeat. The document table stores source, heading, content, and a 1536-dimensional vector. Similarity search uses cosine distance and a small top-k result set.
+`scripts/ingest_documents.py` reads markdown beneath `data/starter-project-2/docs`, splits it at headings, embeds each section, and upserts chunks by `(source, heading)`. This makes re-ingestion safe to repeat. The document table stores source, heading, content, and a 1536-dimensional vector. Similarity search uses cosine distance and a small top-k result set. Retrieval logs include source, heading, cosine similarity and a short document preview; queries and secrets are not logged.
 
 ## Data stores
 

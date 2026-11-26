@@ -17,8 +17,15 @@ _INDIAN_STATES_AND_UTS = {
 _COUNTRIES = {"india", "bharat"}
 _DELIVERY_ADDRESS = re.compile(
     r"\b(?:delivery|deliver(?:ed)?|ship(?:ped)?)\s+to\s+(.+?)"
-    r"(?=\s+by\s+|\s+before\s+|\s+no\s+later\s+than\s+|[.!?\n]|$)",
+    # A period in an initial (for example, "T. Nagar") is part of the
+    # address. Treat a period as sentence punctuation only when it is not
+    # the period after a single-letter initial.
+    r"(?=\s+by\s+|\s+before\s+|\s+no\s+later\s+than\s+|[!?\n]|(?<!\b[A-Z])\.(?=\s|$)|$)",
     re.IGNORECASE | re.DOTALL,
+)
+_OFFICE_IN_CITY = re.compile(
+    r"^(?:(?:our|the)\s+)?(?:office|store|warehouse)\s+in\s+(.+)$",
+    re.IGNORECASE,
 )
 
 
@@ -29,6 +36,10 @@ def _normalize_text(value: str) -> str:
 def _destination_from_components(value: str, customer: str | None) -> str | None:
     components = [part.strip(" \t\r\n.;") for part in value.split(",")]
     components = [part for part in components if part]
+    if len(components) == 1:
+        office_match = _OFFICE_IN_CITY.fullmatch(components[0])
+        if office_match:
+            components[0] = office_match.group(1).strip(" \t\r\n.;")
     if customer and components and _normalize_text(components[0]) == _normalize_text(customer):
         components.pop(0)
     while len(components) > 1 and _normalize_text(components[-1]) in _COUNTRIES:

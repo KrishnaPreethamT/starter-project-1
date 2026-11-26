@@ -48,6 +48,18 @@ from app.services.location_normalizer import normalize_delivery_city
             None,
             "Bengaluru",
         ),
+        (
+            "our office in Kochi",
+            "Please quote for delivery to our office in Kochi by 5 December.",
+            None,
+            "Kochi",
+        ),
+        (
+            "T. Nagar, Chennai",
+            "Please deliver to T. Nagar, Chennai by 8 December.",
+            None,
+            "Chennai",
+        ),
     ],
 )
 def test_normalizes_locality_city_state_addresses(model_city, body, customer, expected):
